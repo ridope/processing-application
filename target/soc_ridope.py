@@ -25,6 +25,9 @@ from litex.soc.integration.soc import SoCRegion
 from litex.soc.integration.soc_core import *
 from litex.soc.integration.builder import *
 from litex.build.generic_platform import *
+from litedram.modules import IS42S16320
+from litedram.phy import GENSDRPHY
+from litex.build.io import DDROutput
 
 _io = [
 
@@ -46,7 +49,9 @@ class _CRG(Module): # Clock Region definition
     def __init__(self, platform, sys_clk_freq):
         self.rst = Signal()
         self.clock_domains.cd_sys = ClockDomain()
+        self.clock_domains.cd_sys_ps = ClockDomain()
 
+        # Clk / Rst
         clk50 = platform.request("clk50")
 
         # PLL - instanciating an Intel FPGA PLL outputing a clock at sys_clk_freq
@@ -54,6 +59,11 @@ class _CRG(Module): # Clock Region definition
         self.comb += pll.reset.eq(self.rst)
         pll.register_clkin(clk50, 50e6)
         pll.create_clkout(self.cd_sys, sys_clk_freq)
+        pll.create_clkout(self.cd_sys_ps, 100e6, phase=90)
+
+        # SDRAM clock
+        self.specials += DDROutput(1, 0, platform.request("sdram_clock"), ClockSignal("sys_ps"))
+
 
 class BaseSoC(SoCCore): # SoC definition - memory sizes are overloaded
     def __init__(self, sys_clk_freq=int(50e6), with_video_terminal=False, **kwargs):
@@ -64,11 +74,19 @@ class BaseSoC(SoCCore): # SoC definition - memory sizes are overloaded
         #So you can change here the sizes of the different memories
         kwargs["integrated_rom_size"] = 0x8000 # chose rom size, holding bootloader (min = 0x6000)
         kwargs["integrated_sram_size"] = 0x8000 # chose sram size, holding stack and heap. (min = 0x6000)
-        kwargs["integrated_main_ram_size"] = 0x10000 # 0 means external RAM is used, non 0 allocates main RAM internally
-        
+
         SoCCore.__init__(self, platform, sys_clk_freq,
             ident          = "LiteX SoC on DE10-Lite",
             **kwargs)
+
+        # SDR SDRAM --------------------------------------------------------------------------------
+        if not self.integrated_main_ram_size:
+            self.submodules.sdrphy = GENSDRPHY(platform.request("sdram"))
+            self.add_sdram("sdram",
+                phy           = self.sdrphy,
+                module        = IS42S16320(sys_clk_freq, "1:1"),
+                l2_cache_size = kwargs.get("l2_size", 8192)
+            )
 
         self.submodules.crg = _CRG(platform, sys_clk_freq) # CRG instanciation     
         
@@ -119,7 +137,7 @@ def main(): # Instanciating the SoC and options
 
     if args.load:
         prog = soc.platform.create_programmer()
-        prog.load_bitstream(os.path.join(builder.gateware_dir, soc.build_name + ".sof"))
+        prog.load_bitstream(builder.get_bitstream_filename(mode="sram"))
 
 if __name__ == "__main__":
     main()
